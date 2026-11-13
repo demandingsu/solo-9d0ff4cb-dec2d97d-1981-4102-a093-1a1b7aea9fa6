@@ -7,6 +7,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
 STORE_PATH = DATA_DIR / "store.json"
+OBJECTION_STORE_PATH = DATA_DIR / "objections.json"
 
 # 抓取参数
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10.0"))

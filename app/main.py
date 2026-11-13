@@ -15,12 +15,23 @@ from .models import (
     TenderDetail,
     TenderSummary,
 )
+from .objection_crawler import ObjectionCrawler
+from .objection_models import (
+    ObjectionTrackRequest,
+    ObjectionTrackResponse,
+    ObjectionTrackSummary,
+)
+from .objection_storage import StoredObjectionTrack, objection_store
+from .objection_tracker import build_tracking_summary
 from .storage import store
 
 app = FastAPI(
-    title="市政工程投标公告采集 API",
-    version="1.0.0",
-    description="沿分页采集公告详情，按招标编号归集原公告/改期/撤回，输出有效截止时间链。",
+    title="市政工程投标公告采集与异议追踪 API",
+    version="1.1.0",
+    description=(
+        "沿分页采集公告详情，按招标编号归集原公告/改期/撤回，输出有效截止时间链；"
+        "并提供结果公示异议事项答复追踪，逐事项输出已答复/未答复/待核实状态与证据。"
+    ),
 )
 
 
@@ -102,6 +113,59 @@ async def raw_announcements() -> dict:
     """最近一次采集的原始解析结果（便于核对，不做链路口算）。"""
     result = await _require_data()
     return result.model_dump()
+
+
+# ---- 结果公示异议追踪 ----
+
+@app.post("/api/objections/track", response_model=ObjectionTrackResponse)
+async def track_objections(
+    req: ObjectionTrackRequest,
+) -> ObjectionTrackResponse:
+    """沿分页读取异议事项/答复/答复撤销，输出核查时点下的逐事项状态。
+
+    分页读取失败时 HTTP 仍为 200，但 status=incomplete、completed=false：
+    仅返回已采集证据，所有事项一律 pending_verify，不做已/未答复断言。
+    """
+    previous = await objection_store.load()
+    collected = await ObjectionCrawler().collect(
+        str(req.catalog_url), req.publication_no, req.checkpoint
+    )
+    summary = build_tracking_summary(collected)
+    await objection_store.replace(StoredObjectionTrack(collected, summary))
+    return ObjectionTrackResponse(
+        status="tracked" if collected.completed else "incomplete",
+        result=summary,
+        collected_at=collected.collected_at,
+        replaced_previous=previous is not None,
+    )
+
+
+async def _require_objection_track() -> ObjectionTrackSummary:
+    track = await objection_store.load()
+    if track is None:
+        raise HTTPException(
+            status_code=404,
+            detail="尚无异议追踪结果，请先调用 POST /api/objections/track",
+        )
+    return track.summary
+
+
+@app.get("/api/objections", response_model=ObjectionTrackSummary)
+async def get_objection_tracking() -> ObjectionTrackSummary:
+    """最近一次异议追踪的逐事项状态与证据链接。"""
+    return await _require_objection_track()
+
+
+@app.get("/api/objections/raw")
+async def raw_objection_records() -> dict:
+    """最近一次异议追踪采集到的原始记录（含未完成时的部分证据）。"""
+    track = await objection_store.load()
+    if track is None:
+        raise HTTPException(
+            status_code=404,
+            detail="尚无异议追踪结果，请先调用 POST /api/objections/track",
+        )
+    return track.model_dump()
 
 
 # ---- 离线样例站点 ----
